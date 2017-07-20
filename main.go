@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -19,9 +21,13 @@ import (
 	"time"
 
 	"github.com/labstack/gommon/log"
-	elastigo "github.com/mattbaird/elastigo/lib"
+	elastic "gopkg.in/olivere/elastic.v5"
 )
 
+// list of top level domains
+// https://www.iana.org/domains/root/db
+
+// https://raw.githubusercontent.com/gavingmiller/second-level-domains/master/SLDs.csv
 // http://tools.ietf.org/html/rfc6962#page-9
 
 const (
@@ -241,8 +247,44 @@ type Document struct {
 	Certificate Certificate `json:"certificate"`
 }
 
+func loadTlds() map[string]bool {
+	tlds := map[string]bool{}
+
+	file, err := os.Open("tlds.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		if _, ok := tlds[scanner.Text()]; ok {
+			continue
+		}
+
+		tlds[scanner.Text()] = true
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	return tlds
+}
+
 func main() {
-	client, err := New(os.Args[1])
+	start := 0
+	cturl := "https://ct.googleapis.com/rocketeer/"
+
+	if len(os.Args) <= 1 {
+	} else if v, err := strconv.Atoi(os.Args[2]); err != nil {
+		fmt.Println(err.Error())
+		return
+	} else {
+		start = v
+	}
+
+	client, err := New(cturl)
 	if err != nil {
 		panic(err)
 	}
@@ -252,9 +294,12 @@ func main() {
 		End  int
 	}
 
-	//rangeChan := make(chan Range)
+	/*
+		tlds := loadTlds()
+		_ = tlds
+	*/
 
-	start, _ := strconv.Atoi(os.Args[2])
+	//rangeChan := make(chan Range)
 	/*
 		to, _ := strconv.Atoi(os.Args[3])
 	*/
@@ -263,24 +308,41 @@ func main() {
 	indexerChan := make(chan *Document)
 
 	go func() {
-		conn := elastigo.NewConn()
-		conn.Domain = "127.0.0.1:9200"
+		es, err := elastic.NewClient(elastic.SetURL(os.Getenv("ES_HOST")), elastic.SetSniff(false))
+		if err != nil {
+			panic(err)
+		}
 
-		bulker := conn.NewBulkIndexerErrors(10, 20)
-		bulker.Start()
-		defer bulker.Stop()
-
-		go func() {
-			for eb := range bulker.ErrorChannel {
-				log.Errorf("Error: %s\n", eb.Err.Error())
-			}
-
-			log.Error("Error chan stopped")
-		}()
+		log.Info("Indexer started")
 
 		count := 0
 
-		log.Info("Indexer started")
+		bulk := es.Bulk()
+
+		flush := func() {
+			if response, err := bulk.Do(context.Background()); err != nil {
+				log.Error("Error indexing: ", err.Error())
+			} else {
+				indexed := response.Indexed()
+				count += len(indexed)
+
+				if response.Errors {
+					for _, item := range indexed {
+						if item.Error != nil {
+							continue
+						}
+
+						log.Error(item.Error)
+					}
+
+				}
+
+				//rate := float64(count) / time.Now().Sub(start).Minutes()
+				log.Infof("Bulk indexing: %d total %d.", len(indexed), count)
+			}
+		}
+
+		defer flush()
 
 		for doc := range indexerChan {
 			// timestamp en index ook interessant
@@ -290,17 +352,20 @@ func main() {
 			// parse domain names for extension
 			// ping ip adresses?
 			// retrieve analytics code?
+			bulk = bulk.Add(elastic.NewBulkIndexRequest().
+				Index("ctdb").
+				Type("certificate").
+				Id(doc.Key).
+				Doc(doc),
+			)
 
-			if err := bulker.Index("ctdb", "certificate", doc.Key, "", "", nil, doc); err != nil {
-				log.Errorf("Error indexing: %s", err.Error())
+			if bulk.NumberOfActions() < 100 {
 				continue
 			}
 
-			count++
+			log.Infof("Indexed %d documents", count)
 
-			if count%500 == 0 {
-				log.Infof("Indexed %d documents", count)
-			}
+			flush()
 		}
 
 	}()
@@ -325,9 +390,14 @@ func main() {
 					<-sem
 				}()
 
-				if entries, err := client.GetEntries(from, end); err != nil {
-					e <- err
-				} else {
+				for {
+					entries, err := client.GetEntries(from, end)
+					if err != nil {
+						e <- err
+						time.Sleep(60 * time.Second)
+						continue
+					}
+
 					for j, entry := range entries {
 						data, _ := base64.StdEncoding.DecodeString(entry.LeafInput)
 						mtl := MerkleLeaf{}
@@ -345,13 +415,15 @@ func main() {
 						Merge(&doc.Certificate, *mtl.Entry.Certificate)
 
 						for _, name := range doc.Certificate.DNSNames {
-							fmt.Fprintln(os.Stderr, name)
+							_ = name
+							// fmt.Fprintln(os.Stderr, name)
 						}
 
 						indexerChan <- &doc
 					}
-				}
 
+					break
+				}
 			}(i, i+499)
 
 			i += 500
@@ -364,7 +436,7 @@ func main() {
 	for {
 		select {
 		case err := <-e:
-			fmt.Println("Error:", err.Error())
+			log.Error(err.Error())
 		case <-done:
 			fmt.Println("done")
 			return

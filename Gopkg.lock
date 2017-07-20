@@ -2,34 +2,10 @@
 
 
 [[projects]]
-  branch = "master"
-  name = "github.com/araddon/gou"
-  packages = ["."]
-  revision = "9a11413ad5023f3b138f313727f35468591ff73b"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/bitly/go-hostpool"
-  packages = ["."]
-  revision = "c32c3660406ef1ea14936cc9282e174fe8508c42"
-
-[[projects]]
   name = "github.com/labstack/gommon"
   packages = ["color","log"]
   revision = "1121fd3e243c202482226a7afe4dcd07ffc4139a"
   version = "v0.2.1"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/lytics/logrus"
-  packages = ["."]
-  revision = "4389a17ed024d8d196b5541116151f378705b0cc"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/mattbaird/elastigo"
-  packages = ["lib"]
-  revision = "2fe47fd29e4b70353f852ede77a196830d2924ec"
 
 [[projects]]
   name = "github.com/mattn/go-colorable"
@@ -42,6 +18,12 @@
   packages = ["."]
   revision = "fc9e8d8ef48496124e79ae0df75490096eccf6fe"
   version = "v0.0.2"
+
+[[projects]]
+  name = "github.com/pkg/errors"
+  packages = ["."]
+  revision = "645ef00459ed84a119197bfb8d8205042c6df63d"
+  version = "v0.8.0"
 
 [[projects]]
   branch = "master"
@@ -61,9 +43,15 @@
   packages = ["unix"]
   revision = "0b25a408a50076fbbcae6b7ac0ea5fbb0b085e79"
 
+[[projects]]
+  name = "gopkg.in/olivere/elastic.v5"
+  packages = [".","uritemplates"]
+  revision = "3116eca7151ed9e9d7aea8707ba3f0e13ac4300d"
+  version = "v5.0.42"
+
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "80b0b6def422bd6967c7103a6cf10cc21cd82e87f5d5a3bfc8fac798811a485b"
+  inputs-digest = "ccba88ea30ce0e6afeee6968617cc1bd449acf2114894c781c27e51158e372ce"
   solver-name = "gps-cdcl"
   solver-version = 1

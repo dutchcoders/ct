@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ctimport
+spec:
+  template:
+    metadata:
+      name: ctimport
+    spec:
+      containers:
+      - name: ctimport
+        image: gcr.io/kubernetes-161213/ctimport
+        env:
+            - name: ES_HOST
+              value: http://51.15.37.73:9200/
+              #value: stash.dutchsec.com:9200
+      restartPolicy: Never

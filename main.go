@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -17,7 +18,6 @@ import (
 	"os"
 	"reflect"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/labstack/gommon/log"
@@ -161,6 +161,8 @@ func (wd *Client) do(req *http.Request, v interface{}) error {
 	var r io.Reader = resp.Body
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < 300 {
+	} else if resp.StatusCode == 400 {
+		return nil
 	} else if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("Not found")
 	} else {
@@ -196,19 +198,35 @@ func (c *Client) GetEntryAndProof() error {
 // ct/v1/get-sth-consistency
 // ct/v1/get-proof-by-hash
 
-type getEntriesResponse struct {
+type EntriesResponse struct {
 	Entries []Entry `json:"entries"`
 }
 
+type SignedTreeHead struct {
+	TreeSize int `json:"tree_size"`
+}
+
+func (c *Client) GetSignedTreeHead() (*SignedTreeHead, error) {
+	var response SignedTreeHead
+
+	if req, err := c.NewRequest("GET", fmt.Sprintf("ct/v1/get-sth"), nil); err != nil {
+		return nil, err
+	} else if err := c.Do(req, &response); err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
 func (c *Client) GetEntries(start, end int) ([]Entry, error) {
-	var response getEntriesResponse
+	var response EntriesResponse
 
 	if req, err := c.NewRequest("GET", fmt.Sprintf("ct/v1/get-entries?start=%d&end=%d", start, end), nil); err != nil {
 		return nil, err
 	} else if err := c.Do(req, &response); err != nil {
 		return nil, err
 	} else if len(response.Entries) == 0 { //response.Success == false {
-		return nil, nil
+		return []Entry{}, nil
 	}
 
 	return response.Entries, nil
@@ -276,8 +294,8 @@ func main() {
 	start := 0
 	cturl := "https://ct.googleapis.com/rocketeer/"
 
-	if len(os.Args) <= 1 {
-	} else if v, err := strconv.Atoi(os.Args[2]); err != nil {
+	if s := os.Getenv("START"); s == "" {
+	} else if v, err := strconv.Atoi(s); err != nil {
 		fmt.Println(err.Error())
 		return
 	} else {
@@ -289,20 +307,6 @@ func main() {
 		panic(err)
 	}
 
-	type Range struct {
-		From int
-		End  int
-	}
-
-	/*
-		tlds := loadTlds()
-		_ = tlds
-	*/
-
-	//rangeChan := make(chan Range)
-	/*
-		to, _ := strconv.Atoi(os.Args[3])
-	*/
 	e := make(chan error)
 
 	indexerChan := make(chan *Document)
@@ -344,26 +348,32 @@ func main() {
 
 		defer flush()
 
-		for doc := range indexerChan {
-			// timestamp en index ook interessant
+		ticker := time.After(time.Second * 5)
 
-			// Merge(&doc.Certificate, *m.Certificate)
+		for {
 
-			// parse domain names for extension
-			// ping ip adresses?
-			// retrieve analytics code?
-			bulk = bulk.Add(elastic.NewBulkIndexRequest().
-				Index("ctdb").
-				Type("certificate").
-				Id(doc.Key).
-				Doc(doc),
-			)
+			select {
 
-			if bulk.NumberOfActions() < 100 {
-				continue
+			case doc := <-indexerChan:
+				// timestamp en index ook interessant
+
+				// Merge(&doc.Certificate, *m.Certificate)
+
+				// parse domain names for extension
+				// ping ip adresses?
+				// retrieve analytics code?
+				bulk = bulk.Add(elastic.NewBulkIndexRequest().
+					Index("ctdb").
+					Type("certificate").
+					Id(doc.Key).
+					Doc(doc),
+				)
+
+				if bulk.NumberOfActions() < 100 {
+					continue
+				}
+			case <-ticker:
 			}
-
-			log.Infof("Indexed %d documents", count)
 
 			flush()
 		}
@@ -372,64 +382,65 @@ func main() {
 
 	done := make(chan bool)
 
-	var wg sync.WaitGroup
-
 	// how to stop on error chan
-
 	go func() {
-		sem := make(chan int, 10)
-
 		i := start
+		treeSize := start
+
 		for {
-			wg.Add(1)
-			sem <- 1
+			resp, err := client.GetSignedTreeHead()
+			if err != nil {
+				e <- err
+				time.Sleep(60 * time.Second)
+				continue
+			}
 
-			go func(from, end int) {
-				defer func() {
-					wg.Done()
-					<-sem
-				}()
+			treeSize = resp.TreeSize
 
-				for {
-					entries, err := client.GetEntries(from, end)
-					if err != nil {
-						e <- err
-						time.Sleep(60 * time.Second)
-						continue
-					}
+			end := int(math.Min(float64(i+500), float64(treeSize-1)))
 
-					for j, entry := range entries {
-						data, _ := base64.StdEncoding.DecodeString(entry.LeafInput)
-						mtl := MerkleLeaf{}
-						mtl.UnmarshalBinary(data)
+			entries, err := client.GetEntries(i, end)
+			if err != nil {
+				e <- err
+				time.Sleep(60 * time.Second)
+				continue
+			}
 
-						if mtl.Entry.Certificate == nil {
-							continue
-						}
+			if len(entries) == 0 {
+				e <- fmt.Errorf("Got no entries")
+				time.Sleep(60 * time.Second)
+				continue
+			}
 
-						doc := Document{}
-						doc.Key = fmt.Sprintf("%x-%x", mtl.Entry.Certificate.AuthorityKeyId, mtl.Entry.Certificate.SubjectKeyId)
-						doc.Timestamp = mtl.Entry.Timestamp
-						doc.CTURL = client.BaseURL.String()
-						doc.Index = i + j
-						Merge(&doc.Certificate, *mtl.Entry.Certificate)
+			log.Infof("Got index=%d count=%d", i, len(entries))
 
-						for _, name := range doc.Certificate.DNSNames {
-							_ = name
-							// fmt.Fprintln(os.Stderr, name)
-						}
+			for j, entry := range entries {
+				data, _ := base64.StdEncoding.DecodeString(entry.LeafInput)
+				mtl := MerkleLeaf{}
+				mtl.UnmarshalBinary(data)
 
-						indexerChan <- &doc
-					}
-
-					break
+				if mtl.Entry.Certificate == nil {
+					continue
 				}
-			}(i, i+499)
 
-			i += 500
+				doc := Document{}
+				doc.Key = fmt.Sprintf("%x-%x", mtl.Entry.Certificate.AuthorityKeyId, mtl.Entry.Certificate.SubjectKeyId)
+				doc.Timestamp = mtl.Entry.Timestamp
+				doc.CTURL = client.BaseURL.String()
+				doc.Index = i + j
+				Merge(&doc.Certificate, *mtl.Entry.Certificate)
+
+				for _, name := range doc.Certificate.DNSNames {
+					_ = name
+					// fmt.Fprintln(os.Stderr, name)
+				}
+
+				indexerChan <- &doc
+			}
+
+			i += len(entries)
 		}
 
-		wg.Wait()
 		done <- true
 	}()
 

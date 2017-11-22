@@ -14,4 +14,6 @@ spec:
             - name: ES_HOST
               value: http://51.15.37.73:9200/
               #value: stash.dutchsec.com:9200
+            - name: START
+              value: "170263956"
       restartPolicy: Never
